@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "aw-importer-lastfm"
+version = "0.0.1"
+description = "Last.fm importer for ActivityWatch"
+authors = ["Zach Strout <zachstrout@gmail.com>"]
+license = "MPL-2.0"
+repository = "https://github.com/RTnhN/aw-importer-lastfm"
+
+[tool.poetry.scripts]
+aw-importer-lastfm = "aw_importer_lastfm:main"
+
+[tool.poetry.dependencies]
+python = "^3.7"
+aw-client = "^0.5.7"
+
+[build-system]
+requires = ["poetry>=0.12"]
+build-backend = "poetry.masonry.api"
