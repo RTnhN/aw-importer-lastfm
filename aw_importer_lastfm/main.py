@@ -10,15 +10,15 @@ from datetime import datetime, timedelta
 from aw_core import dirs
 from aw_core.models import Event
 from aw_client.client import ActivityWatchClient
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 WATCHER_NAME = "aw-importer-lastfm"
-
 
 logger = logging.getLogger(WATCHER_NAME)
 DEFAULT_CONFIG = f"""
 [{WATCHER_NAME}]
 data_path = ""
-poll_time = 60.0
 default_duration = 60
 """
 
@@ -71,7 +71,7 @@ def parse_and_add_data(aw, bucket_name, path, default_duration):
         if batch_events:
             aw.insert_events(bucket_name, batch_events)
 
-        print_statusline(f"Added {added_logs} items(s)")
+        print_statusline(f"Added {added_logs} item(s)")
 
 
 def load_config():
@@ -89,16 +89,41 @@ def print_statusline(msg):
     print_statusline.last_msg = msg
 
 
-def main():
+class CSVFileHandler(FileSystemEventHandler):
+    """Custom event handler for watchdog to process new or modified CSV files."""
 
+    def __init__(self, aw, bucket_name, data_path, default_duration):
+        self.aw = aw
+        self.bucket_name = bucket_name
+        self.data_path = data_path
+        self.default_duration = default_duration
+
+    def on_created(self, event):
+        """Called when a new file or folder is created."""
+        self.process(event)
+
+    def process(self, event):
+        """Process the file if it's a CSV that hasn't been imported yet."""
+        if not event.is_directory and event.src_path.endswith(".csv"):
+            file_path = Path(event.src_path)
+            if not file_path.stem.endswith("_imported"):
+                parse_and_add_data(
+                    self.aw, self.bucket_name, file_path, self.default_duration
+                )
+                file_path.rename(
+                    self.data_path
+                    / Path(file_path.stem + "_imported" + file_path.suffix)
+                )
+
+
+def main():
     logging.basicConfig(level=logging.INFO)
 
     config_dir = dirs.get_config_dir(WATCHER_NAME)
-
     config = load_config()
-    poll_time = float(config[WATCHER_NAME].get("poll_time"))
     data_path = config[WATCHER_NAME].get("data_path", "")
     default_duration = int(config[WATCHER_NAME].get("default_duration", 0))
+
     if not data_path:
         logger.warning(
             """You need to specify the folder that has the data files.
@@ -117,27 +142,24 @@ def main():
         )
         sys.exit(1)
 
-    # TODO: Fix --testing flag and set testing as appropriate
     aw = ActivityWatchClient(WATCHER_NAME, testing=False)
     bucket_name = "{}_{}".format(aw.client_name, aw.client_hostname)
     if aw.get_buckets().get(bucket_name) == None:
         aw.create_bucket(bucket_name, event_type="lifecycle_data", queued=True)
     aw.connect()
 
-    while True:
-        data_path = Path(data_path)
-        files = list(data_path.glob("*.csv"))
-        unimported_files = [
-            file for file in files if not file.stem.endswith("_imported")
-        ]
+    # Set up watchdog observer
+    event_handler = CSVFileHandler(aw, bucket_name, Path(data_path), default_duration)
+    observer = Observer()
+    observer.schedule(event_handler, data_path, recursive=True)
+    observer.start()
 
-        for unimported_file in unimported_files:
-            file_path = data_path / unimported_file
-            parse_and_add_data(aw, bucket_name, file_path, default_duration)
-            file_path.rename(
-                data_path / Path(file_path.stem + "_imported" + file_path.suffix)
-            )
-        sleep(poll_time)
+    try:
+        while True:
+            sleep(1)  # Keep the script running
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
 
 
 if __name__ == "__main__":
